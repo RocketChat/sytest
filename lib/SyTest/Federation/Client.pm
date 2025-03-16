@@ -37,12 +37,10 @@ sub _fetch_key
    my $self = shift;
    my ( $server_name, $key_id ) = @_;
 
-   my $key_id_encoded = uri_escape($key_id);
-
    $self->do_request_json(
       method   => "GET",
       hostname => $server_name,
-      full_uri => "/_matrix/key/v2/server/$key_id_encoded",
+      full_uri => "/_matrix/key/v2/server",
    )->then( sub {
       my ( $body ) = @_;
 
