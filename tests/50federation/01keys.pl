@@ -73,6 +73,16 @@ test "Federation key API allows unsigned requests for keys",
       });
    };
 
+sub key_query_via_get {
+   my ( $http_client, $notary_server, $origin_server, $key_id ) = @_;
+
+   return $http_client->do_request_json(
+      method   => "GET",
+      hostname => $notary_server->server_name,
+      full_uri => "/_matrix/key/v2/query/$origin_server/$key_id",
+   );
+}
+
 sub key_query_via_post {
    my ( $http_client, $notary_server, $origin_server, $key_id, %params ) = @_;
 
@@ -94,59 +104,66 @@ sub key_query_via_post {
    );
 }
 
-test "Federation key API can act as a notary server via a POST request",
-	requires => [ $main::HOMESERVER_INFO[0], $main::INBOUND_SERVER, $main::OUTBOUND_CLIENT ],
+my %FETCHERS=(
+   GET => \&key_query_via_get,
+   POST => \&key_query_via_post,
+);
 
-	check => sub {
-	 my ( $info, $inbound_server, $client ) = @_;
-	 my $first_home_server = $info->server_name;
+foreach my $method (keys %FETCHERS) {
+   test "Federation key API can act as a notary server via a $method request",
+      requires => [ $main::HOMESERVER_INFO[0], $main::INBOUND_SERVER, $main::OUTBOUND_CLIENT ],
 
-	 my $key_id = $inbound_server->key_id;
-	 my $local_server_name = $inbound_server->server_name;
+      check => sub {
+         my ( $info, $inbound_server, $client ) = @_;
+         my $first_home_server = $info->server_name;
 
-	 key_query_via_post(
-		$client, $info, $local_server_name, $key_id
-	 )->then( sub {
-		my ( $body ) = @_;
-		log_if_fail "Response", $body;
+         my $key_id = $inbound_server->key_id;
+         my $local_server_name = $inbound_server->server_name;
 
-		assert_json_keys( $body, qw( server_keys ));
-		assert_json_list( $body->{server_keys} );
+         $FETCHERS{$method}(
+            $client, $info, $local_server_name, $key_id
+         )->then( sub {
+            my ( $body ) = @_;
+            log_if_fail "Response", $body;
 
-		my $key = first {
-		   $_->{server_name} eq $local_server_name and exists $_->{verify_keys}{$key_id}
-		} @{ $body->{server_keys} };
+            assert_json_keys( $body, qw( server_keys ));
+            assert_json_list( $body->{server_keys} );
 
-		$key or
-		   die "Expected to find a response about $key_id from $local_server_name";
+            my $key = first {
+               $_->{server_name} eq $local_server_name and exists $_->{verify_keys}{$key_id}
+            } @{ $body->{server_keys} };
 
-		my $first_hs_sig = $key->{signatures}{$first_home_server} or
-		   die "Expected the key to be signed by the first homeserver";
+            $key or
+               die "Expected to find a response about $key_id from $local_server_name";
 
-		keys %$first_hs_sig == 1 or
-		   die "Expected the first homeserver to apply one signature";
+            my $first_hs_sig = $key->{signatures}{$first_home_server} or
+               die "Expected the key to be signed by the first homeserver";
 
-		my ( $key_id, $signature_base64 ) = %$first_hs_sig;
+            keys %$first_hs_sig == 1 or
+               die "Expected the first homeserver to apply one signature";
 
-		assert_base64_unpadded( $signature_base64 );
-		my $signature = decode_base64 $signature_base64;
-		assert_eq( length( $signature ), 64, "signature length" );
+            my ( $key_id, $signature_base64 ) = %$first_hs_sig;
 
-		my $signed_bytes = encode_json_for_signing( $key );
+            assert_base64_unpadded( $signature_base64 );
+            my $signature = decode_base64 $signature_base64;
+            assert_eq( length( $signature ), 64, "signature length" );
 
-		$client->get_key(
-		   server_name => $first_home_server,
-		   key_id      => $key_id,
-		)->then( sub {
-		   my ( $server_key ) = @_;
+            my $signed_bytes = encode_json_for_signing( $key );
 
-		   Crypt::Ed25519::verify( $signed_bytes, $server_key, $signature ) or
-			  die "Signature verification failed";
+            $client->get_key(
+               server_name => $first_home_server,
+               key_id      => $key_id,
+            )->then( sub {
+               my ( $server_key ) = @_;
 
-		   Future->done(1);
-		});
-	 });
-};
+               Crypt::Ed25519::verify( $signed_bytes, $server_key, $signature ) or
+                  die "Signature verification failed";
+
+               Future->done(1);
+            });
+         });
+      };
+}
 
 test "Key notary server should return an expired key if it can't find any others",
    requires => [ $main::HOMESERVER_INFO[0], $main::OUTBOUND_CLIENT, $main::TEST_SERVER_INFO ],
